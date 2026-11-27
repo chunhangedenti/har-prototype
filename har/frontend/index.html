@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Motion recorder</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --ink: #1b1f24;
+      --muted: #5c6670;
+      --accent: #0b6e4f;
+      --danger: #9b2226;
+      --border: #d0d7de;
+    }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      padding: 12px;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    button {
+      border: 1px solid #c9d1d9;
+      background: #fff;
+      color: var(--ink);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.stop { background: var(--danger); color: #fff; border-color: var(--danger); }
+    .status { font-size: 14px; color: var(--muted); line-height: 1.4; }
+    .count { font-weight: 600; color: var(--ink); }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <button id="permBtn" type="button">1. Enable sensors</button>
+    <button id="startBtn" class="primary" type="button" disabled>2. Record</button>
+    <button id="stopBtn" class="stop" type="button" disabled>3. Stop &amp; send</button>
+  </div>
+  <div class="status" id="status">
+    Open this page on a phone over HTTPS. Tap Enable, then Record, then Stop.
+  </div>
+
+  <script>
+    // Minimal Streamlit custom-component bridge (no npm build).
+    function sendMessageToStreamlitClient(type, data) {
+      const msg = Object.assign({ isStreamlitMessage: true, type: type }, data);
+      window.parent.postMessage(msg, "*");
+    }
+
+    const Streamlit = {
+      setComponentReady: function () {
+        sendMessageToStreamlitClient("streamlit:componentReady", { apiVersion: 1 });
+      },
+      setFrameHeight: function (height) {
+        sendMessageToStreamlitClient("streamlit:setFrameHeight", { height: height });
+      },
+      setComponentValue: function (value) {
+        sendMessageToStreamlitClient("streamlit:setComponentValue", { value: value });
+      },
+    };
+
+    Streamlit.setComponentReady();
+    Streamlit.setFrameHeight(140);
+
+    const statusEl = document.getElementById("status");
+    const permBtn = document.getElementById("permBtn");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+
+    let samples = [];
+    let recording = false;
+    let permissionGranted = false;
+    let t0 = null;
+
+    function setStatus(text) {
+      statusEl.innerHTML = text;
+      Streamlit.setFrameHeight(document.body.scrollHeight + 16);
+    }
+
+    function onMotion(event) {
+      if (!recording) return;
+      const acc = event.accelerationIncludingGravity || event.acceleration;
+      if (!acc) return;
+      const ax = acc.x;
+      const ay = acc.y;
+      const az = acc.z;
+      if (ax === null || ay === null || az === null) return;
+      if (t0 === null) t0 = event.timeStamp || performance.now();
+      const t = (event.timeStamp || performance.now()) - t0;
+      samples.push({
+        timestamp: t,
+        ax: ax,
+        ay: ay,
+        az: az,
+      });
+      if (samples.length % 10 === 0) {
+        setStatus(
+          'Recording… <span class="count">' + samples.length + "</span> samples"
+        );
+      }
+    }
+
+    async function enableSensors() {
+      try {
+        if (typeof DeviceMotionEvent !== "undefined" &&
+            typeof DeviceMotionEvent.requestPermission === "function") {
+          const result = await DeviceMotionEvent.requestPermission();
+          if (result !== "granted") {
+            setStatus("Motion permission denied. Allow motion access and try again.");
+            return;
+          }
+        }
+        window.removeEventListener("devicemotion", onMotion);
+        window.addEventListener("devicemotion", onMotion);
+        permissionGranted = true;
+        startBtn.disabled = false;
+        setStatus("Sensors enabled. Hold the phone and tap Record.");
+      } catch (err) {
+        setStatus("Could not enable sensors: " + err);
+      }
+    }
+
+    function startRecording() {
+      if (!permissionGranted) {
+        setStatus("Enable sensors first.");
+        return;
+      }
+      samples = [];
+      t0 = null;
+      recording = true;
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      permBtn.disabled = true;
+      setStatus('Recording… <span class="count">0</span> samples');
+    }
+
+    function stopRecording() {
+      recording = false;
+      stopBtn.disabled = true;
+      startBtn.disabled = false;
+      permBtn.disabled = false;
+
+      if (samples.length === 0) {
+        setStatus("No samples captured. Use a phone browser with motion sensors.");
+        Streamlit.setComponentValue({ samples: [], error: "no_samples" });
+        return;
+      }
+
+      setStatus(
+        "Sent <span class=\"count\">" + samples.length +
+        "</span> samples to Python. You can Record again or download on the page."
+      );
+      Streamlit.setComponentValue({ samples: samples, error: null });
+    }
+
+    permBtn.addEventListener("click", enableSensors);
+    startBtn.addEventListener("click", startRecording);
+    stopBtn.addEventListener("click", stopRecording);
+
+    // Desktop browsers often have no DeviceMotion — still allow the UI to load.
+    if (typeof DeviceMotionEvent === "undefined") {
+      setStatus(
+        "DeviceMotionEvent is not available in this browser. Open the Cloud HTTPS URL on a phone."
+      );
+    }
+  </script>
+</body>
+</html>
